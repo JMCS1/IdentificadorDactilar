@@ -1,90 +1,121 @@
 package com.example.identificadordactilar;
 
 import android.content.Intent;
+import android.hardware.fingerprint.FingerprintManager;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.widget.Button;
+import android.os.CancellationSignal;
+import android.view.View;
 import android.widget.ImageView;
 import android.widget.TextView;
+import android.widget.Toast;
 
-import androidx.activity.EdgeToEdge;
-import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.biometric.BiometricPrompt;
-import androidx.core.content.ContextCompat;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 
-import java.util.concurrent.Executor;
-
+@SuppressWarnings("deprecation")
 public class MainActivity extends AppCompatActivity {
 
-    private TextView tvStatus;
-    private ImageView imgStatus;
-    private Button btnAuthenticate;
-    private BiometricPrompt biometricPrompt;
-    private BiometricPrompt.PromptInfo promptInfo;
+    private TextView textView;
+    private ImageView imageView;
+    private FingerprintManager fingerprintManager;
+    private FingerprintManager.AuthenticationCallback authenticationCallback;
+    private CancellationSignal cancellationSignal;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
 
-        // Ajuste de insets para EdgeToEdge
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
-            return insets;
-        });
+        // Inicializar componentes de la interfaz de usuario
+        textView = findViewById(R.id.textView);
+        imageView = findViewById(R.id.imageView);
 
-        // Inicializar componentes
-        tvStatus = findViewById(R.id.tvStatus);
-        imgStatus = findViewById(R.id.imgStatus);
-        btnAuthenticate = findViewById(R.id.btnAuthenticate);
+        // Obtener el servicio del sistema FingerprintManager
+        fingerprintManager = (FingerprintManager) getSystemService(FINGERPRINT_SERVICE);
 
-        // Configurar Biometría
-        Executor executor = ContextCompat.getMainExecutor(this);
-        biometricPrompt = new BiometricPrompt(MainActivity.this, executor, new BiometricPrompt.AuthenticationCallback() {
+        // Implementar FingerprintManager.AuthenticationCallback manejando los 4 métodos solicitados
+        authenticationCallback = new FingerprintManager.AuthenticationCallback() {
             @Override
-            public void onAuthenticationError(int errorCode, @NonNull CharSequence errString) {
+            public void onAuthenticationError(int errorCode, CharSequence errString) {
                 super.onAuthenticationError(errorCode, errString);
-                imgStatus.setImageResource(R.drawable.ic_error);
-                tvStatus.setText("Error: " + errString);
+                // Dinámico: Muestra el error real del sistema/emulador (ej. "No hay huellas registradas")
+                textView.setText("ERROR: " + errString);
+                imageView.setImageResource(R.drawable.icono_incorrecto);
             }
 
             @Override
-            public void onAuthenticationSucceeded(@NonNull BiometricPrompt.AuthenticationResult result) {
-                super.onAuthenticationSucceeded(result);
-                imgStatus.setImageResource(R.drawable.ic_success);
-                tvStatus.setText("¡Escaneo de huella dactilar exitoso! Iniciando sesión…");
+            public void onAuthenticationHelp(int helpCode, CharSequence helpString) {
+                super.onAuthenticationHelp(helpCode, helpString);
+                textView.setText("AYUDA: " + helpString);
+                imageView.setImageResource(R.drawable.icono_carga);
+            }
 
-                // Transición automática tras 1.5 segundos
-                new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                    Intent intent = new Intent(MainActivity.this, ResultadoActivity.class);
-                    startActivity(intent);
-                }, 1500);
+            @Override
+            public void onAuthenticationSucceeded(FingerprintManager.AuthenticationResult result) {
+                super.onAuthenticationSucceeded(result);
+                Toast.makeText(MainActivity.this, "Autenticación exitosa", Toast.LENGTH_SHORT).show();
+                textView.setText("¡Escaneo de huella dactilar exitoso! \n Iniciando sesión…");
+                imageView.setImageResource(R.drawable.icono_correcto);
+
+                // Lanzar la actividad Resultado
+                Intent intent = new Intent(MainActivity.this, Resultado.class);
+                startActivity(intent);
             }
 
             @Override
             public void onAuthenticationFailed() {
                 super.onAuthenticationFailed();
-                imgStatus.setImageResource(R.drawable.ic_error);
-                tvStatus.setText("Huella no reconocida. Intente de nuevo.");
+                textView.setText("Escaneo fallido, huella dactilar no registrada");
+                imageView.setImageResource(R.drawable.icono_incorrecto);
             }
-        });
+        };
+    }
 
-        promptInfo = new BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Autenticación Biométrica")
-                .setSubtitle("Use su huella dactilar para ingresar")
-                .setNegativeButtonText("Cancelar")
-                .build();
+    /**
+     * Método manejador vinculado a través del atributo XML android:onClick="scanButton"
+     */
+    public void scanButton(View view) {
+        if (fingerprintManager == null) {
+            textView.setText("ERROR: El hardware de huella no está disponible");
+            return;
+        }
 
-        // Evento de clic para iniciar la autenticación
-        btnAuthenticate.setOnClickListener(v -> {
-            biometricPrompt.authenticate(promptInfo);
-        });
+        // 1. Validar si el emulador/dispositivo tiene soporte de hardware
+        if (!fingerprintManager.isHardwareDetected()) {
+            textView.setText("ERROR: No se detectó hardware de huella dactilar");
+            return;
+        }
+
+        // 2. Validar si el usuario ya registró al menos una huella en los Ajustes del sistema
+        if (!fingerprintManager.hasEnrolledFingerprints()) {
+            textView.setText("ERROR: No hay huellas registradas. Ve a Ajustes -> Seguridad -> Huella dactilar en tu emulador");
+            return;
+        }
+
+        try {
+            textView.setText("Esperando lectura de huella...");
+            imageView.setImageResource(R.drawable.icono_carga);
+
+            // Cancelar cualquier escaneo previo activo para evitar colisiones
+            if (cancellationSignal != null) {
+                cancellationSignal.cancel();
+            }
+            cancellationSignal = new CancellationSignal();
+
+            // Iniciar la autenticación biométrica nativa de manera robusta
+            fingerprintManager.authenticate(null, cancellationSignal, 0, authenticationCallback, null);
+        } catch (SecurityException e) {
+            textView.setText("ERROR: Permiso denegado");
+            e.printStackTrace();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Buena práctica: Detener el escaneo si la app pasa a segundo plano
+        if (cancellationSignal != null) {
+            cancellationSignal.cancel();
+            cancellationSignal = null;
+        }
     }
 }
